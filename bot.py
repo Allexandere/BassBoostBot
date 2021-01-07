@@ -1,19 +1,24 @@
-from random import randint
-from pydub import AudioSegment
+import math
+import os
+import requests
+import threading
+import vk
+import wget
 from numpy import mean, std
-import requests, vk, wget, os, json, math, threading
+from pydub import AudioSegment
+from random import randint
 
 
 def main():
 
     VK_API_ACCESS_TOKEN = '4d8d7b04b056473c9b33d7fdffdc9795ba1c36856510942cb664aab6c6bce6255936767f887e89d288fea'
-    VK_API_VERSION = '5.120'
+    VK_API_VERSION = '5.126'
     GROUP_ID = 195913773
     session = vk.Session(access_token=VK_API_ACCESS_TOKEN)
     api = vk.API(session, v=VK_API_VERSION)
     longPoll = api.groups.getLongPollServer(group_id=GROUP_ID)
     server, key, ts = longPoll['server'], longPoll['key'], longPoll['ts']
-
+    active_users = []
 
     def bass_boost(path, accentuate_db):
         def bass_line_freq(track):
@@ -39,12 +44,18 @@ def main():
         combined.export(path, format="mp3")
 
     def work(update, api):
-        def write_msg(message,forward_messages='',attachment=''):
-            api.messages.send(user_id = update['object']['message']['from_id'],
-                              random_id=randint(-2147483648, 2147483647),
-                              message = message,
-                              forward_messages = forward_messages,
-                              attachment = attachment)
+        def writeMessage(message,forward_messages='',attachment=''):
+            return api.messages.send(user_id = update['object']['message']['from_id'],
+                                    random_id = randint(-2147483648, 2147483647),
+                                    message = message,
+                                    forward_messages = forward_messages,
+                                    attachment = attachment)
+        def editMessage(message,id,keep_forward_messages=1):
+            return api.messages.edit(peer_id = update['object']['message']['from_id'],
+                                message = message,
+                                message_id = id,
+                                keep_forward_messages = keep_forward_messages,
+                                random_id = randint(-2147483648, 2147483647))
         keyboard = {
             "one_time": True,
             "buttons": [
@@ -62,60 +73,65 @@ def main():
         }
         try:
             if update['type'] == 'message_new':
-                if update['object']['message']['text'] in ['Помощь', 'Начать', 'Start','Как пользоваться ботом?']:
+                messageText = update['object']['message']['text']
+                print(update['object']['message']['text'])
+                #Получили сообщение от пользователя
+                #Если текст сообщения есть в ключевых словах, то выводим краткий туториал
+                if messageText in ['Помощь', 'Начать', 'Start','Как пользоваться ботом?']:
                     pfile = requests.post(api.photos.getMessagesUploadServer(peer_id=update['object']['message']['from_id'])['upload_url'],
                                                                     files={'photo': open('info.jpg', 'rb')}).json()
-
                     photo = api.photos.saveMessagesPhoto(server=pfile['server'],
                                                          photo=pfile['photo'],
                                                          hash=pfile['hash'])[0]
-
-                    write_msg('Отправь мне список песню и напиши силу бассбуста (от 0 до 60) как на картинке ниже',
-                              attachment='photo%s_%s' % (photo['owner_id'], photo['id']))
+                    writeMessage('Отправь мне песню, не превышающую по времени 10 минут, и я забастбущу её!',
+                                 attachment='photo%s_%s' % (photo['owner_id'], photo['id']))
                     return
-
-
+                #Иначе обрабатываем сообщение
+                song = dict()
                 try:
-                    db = int(update['object']['message']['text'])
-                    if db < 0 or db > 60:
-                        raise ValueError
+                    #Получаем список песен
                     songs = [attachment for attachment in update['object']['message']['attachments'] if
                              attachment['type'] == 'audio']
-                    if len(songs) == 0 or len(songs) > 1:
+                    #Если песен больше 1 или 0 то выводим соответствующее предупреждение
+                    if len(songs) == 0:
                         raise ValueError
+                    elif len(songs) > 1:
+                        raise IndexError
+                    else:
+                        song = songs[0]
                 except ValueError:
-                    api.messages.send(user_id=update['object']['message']['from_id'],
-                                      random_id=randint(-2147483648, 2147483647),
-                                      message='Неверный формат сообщения',
-                                      forward_messages=update['object']['message']['id'],
-                                      keyboard=json.dumps(keyboard, ensure_ascii=False))
+                    writeMessage('Не вижу песни...',
+                                  forward_messages=update['object']['message']['id'])
                     return
+                except IndexError:
+                    writeMessage('Слишком много песен, нужна одна', 
+                                  forward_messages=update['object']['message']['id'])
+                    return
+                #Если песня превышает по длительности 10 минут то выводим предупреждение
+                if song['audio']['duration'] > 600:
+                  writeMessage("Песня {} превышает длину в 10 минут, бассбуста не будет".format(song['audio']['title']))
+                  return
+                #Скачиваем и бассбустим песню
+                id = writeMessage('Скачиваю',
+                                  forward_messages=update['object']['message']['id'])
 
-                audio_paths = []
-
-                write_msg('Идёт форматирование...',
-                          forward_messages=update['object']['message']['id'])
-
-                for attachment in update['object']['message']['attachments']:
-                    if attachment['type'] == 'audio':
-                        if attachment['audio']['duration'] > 600:
-                            write_msg("Песня {} превышает лимит в 10 минут, поэтому будет пропущена".format(
-                                                  attachment['audio']['title']))
-                            continue
-                        audio_path = attachment['audio']['title'] + '.mp3'
-                        wget.download(attachment['audio']['url'], audio_path)
-                        bass_boost(audio_path, db)
-                        audio_paths.append(audio_path)
-
-                for song in audio_paths:
-
-                    afile = requests.post(api.docs.getMessagesUploadServer(peer_id=update['object']['message']['from_id'],
-                                                                  type='audio_message')['upload_url'], files={'file': open(song, 'rb')}).json()['file']
-                    doc = api.docs.save(file=afile)
-                    write_msg("Bass Boost версия \"{}\" готова\nСсылка: {}".format(song.replace(".mp3", ""), doc['audio_message']['link_mp3']))
-                    os.remove(song)
+                originalName = song['audio']['title']
+                songPath = str(randint(0, 2147483647)) + '.mp3'
+                wget.download(song['audio']['url'], songPath)
+                editMessage("Обрабатываю",id)
+                bass_boost(songPath, 15)
+                
+                #Выгружаем песню и отправляем итоговое сообщение пользователю
+                editMessage("Выгружаю",id)
+                afile = requests.post(api.docs.getMessagesUploadServer(peer_id=update['object']['message']['from_id'],
+                                                                  type='audio_message')['upload_url'], files={'file': open(songPath, 'rb')}).json()['file']
+                doc = api.docs.save(file=afile)
+                editMessage("Bass Boost версия \"{}\" готова\nСсылка: {}".format(originalName, doc['audio_message']['link_mp3']),
+                            id,
+                            keep_forward_messages = 0)
+                os.remove(songPath)
         except:
-            print('thread error')
+            writeMessage("Произошла ошибка, повторите попытку позже")
             return
 
 
@@ -139,4 +155,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
