@@ -11,7 +11,7 @@ from random import randint
 
 def main():
 
-    VK_API_ACCESS_TOKEN = '4d8d7b04b056473c9b33d7fdffdc9795ba1c36856510942cb664aab6c6bce6255936767f887e89d288fea'
+    VK_API_ACCESS_TOKEN = 'Тут должен быть токен'
     VK_API_VERSION = '5.126'
     GROUP_ID = 195913773
     session = vk.Session(access_token=VK_API_ACCESS_TOKEN)
